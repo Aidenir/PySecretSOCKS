@@ -1,6 +1,10 @@
 #!/usr/bin/env python
 from __future__ import division, absolute_import, print_function, unicode_literals
+import base64
 import secretsocks
+import struct
+import traceback
+import time
 import socket
 import threading
 import sys
@@ -29,11 +33,41 @@ class Client(secretsocks.Client):
     def recv(self):
         while self.alive:
             try:
-                data = self.data_channel.recv(4092)
-                self.recvbuf.put(data)
+                string = ""
+                while len(string) == 0 or string[0] != ',' or string.count(',') %3 != 0:
+                    data = self.data_channel.recv(4092)
+                    string = string + data.decode('utf-8')
+                print("###################CLIENT###################")
+                noMessages = int(string.count(',') / 3)
+                print(str(noMessages) + " messages should be processed")
+                index = 0
+                for i in range(0,noMessages):
+                    print("Process message")
+                    stringMessage = string[index:]
+                    firstindex = string.index(',')
+                    secondindex = string.index(',', firstindex + 1)
+                    thirdindex = string.index(',', secondindex + 1)
+                    size = string[firstindex + 1: secondindex]
+                    msg = string[secondindex + 1 :thirdindex]
+                    if sys.getsizeof(msg) != int(size):
+                        print("Wrong size, message is corrupt, header says: " + size + " but size is " + str(sys.getsizeof(msg)))
+                    #print("Recieved message: " + msg)
+
+                    data = base64.b64decode(msg)
+                    bytes = struct.unpack('<HH',data[:4])
+                    print("id: " + str(bytes[0]) + " size: " + str(bytes[1]))
+                    body = data[4: 4 + int(bytes[1])]
+                    print(body)
+
+
+                    index = thirdindex
+                    self.recvbuf.put(data)
+                    print("Message " + str(i) + " of " + str(noMessages) + " processed")
+                print("Finished")
             except socket.timeout:
                 continue
             except:
+                print("Exception " + traceback.format_exc())
                 self.alive = False
                 self.data_channel.close()
 
@@ -44,7 +78,17 @@ class Client(secretsocks.Client):
                 data = self.writebuf.get(timeout=10)
             except Queue.Empty:
                 continue
-            self.data_channel.sendall(data)
+            base = base64.b64encode(data)
+            strBase = base.decode('utf-8')
+            size = sys.getsizeof(strBase)
+            if size > 4092:
+                messages = int(size / 4092)
+                print("Message should be sent in " + str(messages) + " chunks")
+            msg = ","+str(size)+","+strBase+","
+            #print("Send to server: " + msg)
+            print("Send c->s message size: " + str(size))
+
+            self.data_channel.sendall(str.encode(msg))
 
 
 class Server(secretsocks.Server):
@@ -63,11 +107,27 @@ class Server(secretsocks.Server):
     def recv(self):
         while self.alive:
             try:
-                data = self.data_channel.recv(4092)
+                string = ""
+                while len(string) == 0 or string[0] != ',' or string.count(',') %3 != 0:
+                    data = self.data_channel.recv(4092)
+                    string = string + data.decode('utf-8')
+                print("###################SERVER###################")
+                noMessages = string.count(',') / 3
+                #print(str(noMessages) + " messages should be processed")
+                firstindex = string.index(',')
+                secondindex = string.index(',', firstindex + 1)
+                thirdindex = string.index(',', secondindex + 1)
+                size = string[firstindex + 1: secondindex]
+                msg = string[secondindex + 1 :thirdindex]
+                if sys.getsizeof(msg) != int(size):
+                    print("Wrong size, message is corrupt, header says: " + size + " but size is " + str(sys.getsizeof(msg)))
+                #print("Recieved message: " + msg)
+                data = base64.b64decode(msg)
                 self.recvbuf.put(data)
             except socket.timeout:
                 continue
             except:
+                print("close" + str(sys.exc_info()[0]))
                 self.alive = False
                 self.data_channel.close()
 
@@ -78,15 +138,24 @@ class Server(secretsocks.Server):
                 data = self.writebuf.get(timeout=10)
             except Queue.Empty:
                 continue
-            self.data_channel.sendall(data)
+            base = base64.b64encode(data)
+            strBase = base.decode('utf-8')
+            size = sys.getsizeof(strBase)
+            if size > 4092:
+                messages = size / 4092
+                print("Message should be sent in " + str(messages) + " chunks")
+            msg = ","+str(size)+","+strBase+","
+            #print("Send to client: " + msg)
+            print("Send s->c message size: " + str(size))
 
+            self.data_channel.sendall(str.encode(msg))
 
 def start_fake_remote():
-    Server('127.0.0.1', 8080)
+    Server('127.0.0.1', 9991)
 
 if __name__ == '__main__':
     # Set secretsocks into debug mode
-    secretsocks.set_debug(True)
+    secretsocks.set_debug(False)
 
     # Create a server object in its own thread
     print('Starting the fake remote server...')
@@ -96,9 +165,10 @@ if __name__ == '__main__':
 
     # Create the client object
     print('Creating a the client...')
-    client = Client('127.0.0.1', 8080)
+    time.sleep(2)
+    client = Client('127.0.0.1', 9991)
 
     # Start the standard listener with our client
     print('Starting socks server...')
-    listener = secretsocks.Listener(client, host='127.0.0.1', port=1080)
+    listener = secretsocks.Listener(client, host='0.0.0.0', port=9998)
     listener.wait()
